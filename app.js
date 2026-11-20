@@ -7,6 +7,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
 const inTG = !!(tg && tg.initData);
 const tgv = v => inTG && typeof tg.isVersionAtLeast === 'function' && tg.isVersionAtLeast(v);
 
+// Сервер бота (Cloudflare Worker): приветствие на /start и напоминания.
+// Пусто — приложение работает без сервера, раздел напоминаний скрыт.
+const BOT_API = 'https://forma-bot.forma-trener.workers.dev';
+const BOT_USERNAME = 'forma_trener_bot';
+
 function haptic(type = 'light') {
   try {
     if (tgv('6.1')) {
@@ -51,6 +56,8 @@ const defaultState = () => ({
   guidesSaved: [], // гайды в закладках
   body: null,      // параметры тела для КБЖУ
   goal: 'keep',    // цель: cut / keep / bulk
+  remind: { on: false, days: [0, 2, 4], time: '19:00' }, // напоминания от бота (0 = пн)
+  remindSent: '',  // что последний раз отправили на сервер бота
 });
 
 // v2: сплит Арнольда переписан — старые замены упражнений в нём больше не подходят
@@ -199,6 +206,8 @@ const I = {
   food: sv('<path d="M5 11h14a7 7 0 0 1-14 0z"/><path d="M9 7c0-2 2-2 2-4M13 7c0-2 2-2 2-4"/>', 24),
   search: sv('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>', 24),
   chev: sv('<path d="M8 10l4-4 4 4M8 14l4 4 4-4"/>', 18),
+  share: sv('<path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/>', 20),
+  bell: sv('<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/>', 20),
 };
 
 /* =====================================================================
@@ -524,7 +533,9 @@ async function finishSession() {
     ex,
     tonnage: ex.filter(e => !isCardio(e)).reduce((a, e) => a + setTonnage(e.sets), 0),
   };
+  rec.prs = findRecords(ex, rec.date);
   S.history.push(rec);
+  botSync();
   ex.forEach(e => { S.last[e.id] = { w: e.sets.map(x => x.w), r: e.sets.map(x => x.r), date: rec.date }; });
   S.session = null; S.rest = null;
   save(); releaseWake(); haptic('success');
@@ -535,6 +546,39 @@ async function finishSession() {
 function fmtSet(e, x, short = false) {
   if (isCardio(e)) return [x.w ? fmtNum(x.w) + ' км' : '', fmtNum(x.r) + ' мин'].filter(Boolean).join(' · ');
   return short ? (x.w ? fmtNum(x.w) + '×' : '') + fmtNum(x.r) : (x.w ? fmtNum(x.w) + ' кг × ' : '') + fmtNum(x.r);
+}
+
+/* ---------- Подсказка веса на сегодня ---------- */
+// правило двойной прогрессии: все подходы дошли до верха диапазона → +шаг веса
+function suggestion(e) {
+  if (isCardio(e) || isTime(e.reps)) return null;
+  const last = S.last[e.id];
+  if (!last || !last.w || !last.w.length) return null;
+  const [lo, hi] = String(e.reps).split(/[-–]/).map(n => parseInt(n, 10));
+  const top = hi || lo;
+  if (!top) return null;
+  const ws = last.w.map(num), rs = last.r.map(num);
+  const lw = Math.max(0, ...ws);
+  if (!lw) return null;
+  const atW = rs.filter((r, k) => ws[k] === lw);
+  let w = lw, msg;
+  if (atW.every(r => r >= top)) {
+    w = lw + (lw < 10 ? 1 : 2.5);
+    msg = `Все подходы дошли до ${top} повторений — пора добавить вес.`;
+  } else if (atW.some(r => r < (lo || top))) {
+    msg = `Оставь вес и доведи все подходы хотя бы до ${lo}.`;
+  } else {
+    msg = `Оставь вес и добавь 1–2 повтора. Когда дойдёшь до ${top} во всех подходах — прибавим вес.`;
+  }
+  return { w, up: w > lw, msg, lastStr: ws.map((x, k) => `${x ? fmtNum(x) + '×' : ''}${fmtNum(rs[k])}`).join(', ') };
+}
+function suggBlock(e) {
+  const sg = suggestion(e);
+  if (!sg) return '';
+  const need = e.sets.some(x => !x.done && num(x.w) !== sg.w);
+  return `<div class="sugg ${sg.up ? 'up' : ''}"><div class="sugg-t"><small>Прошлый раз: ${sg.lastStr}</small>
+      <b>${sg.up ? '📈 ' : ''}Сегодня: ${fmtNum(sg.w)} кг</b><span>${esc(sg.msg)}</span></div>
+    ${need ? `<button data-act="apply-sugg">Поставить</button>` : ''}</div>`;
 }
 
 /* ---------- Экран упражнения ---------- */
@@ -576,6 +620,7 @@ VIEWS.ex = ({ i }) => {
       <button data-act="ex-history" data-arg="${i}">${I.history}<span>История</span></button>
       <button data-act="swap" data-arg="${i}">${I.swap}<span>Заменить</span></button>
     </div>
+    ${suggBlock(e)}
     <div class="sets-head"><span></span><span>${cardio ? 'Расстояние' : 'Вес'}</span><span>${cardio ? 'Время' : isTime(e.reps) ? 'Секунды' : 'Повторения'}</span><span></span></div>
     ${rows}
     ${cardio ? '' : `<button class="add-set" data-act="add-set"><span class="circle">${I.plus}</span>Ещё подход</button>`}
@@ -695,8 +740,10 @@ function renderRest() {
   </div>`;
 }
 function restDone() {
+  // три сильных толчка: заметно, даже если телефон лежит на скамье
   haptic('success');
-  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  [250, 500].forEach(t => setTimeout(() => haptic('heavy'), t));
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 300]);
   if (S.sound) beep();
   toast('Отдых окончен — следующий подход!');
 }
@@ -707,6 +754,15 @@ function unlockAudio() {
     if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
     if (actx.state === 'suspended') actx.resume();
   } catch (e) { /* без звука */ }
+}
+function tickSound() {
+  if (!actx) return;
+  const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+  o.frequency.value = 660; o.connect(g); g.connect(actx.destination);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+  o.start(t); o.stop(t + 0.1);
 }
 function beep() {
   if (!actx) return;
@@ -742,6 +798,9 @@ function tick() {
     } else {
       const el = document.querySelector('[data-el="rest"]');
       if (el) el.textContent = fmtClock(Math.ceil(left));
+      // лёгкий отсчёт на последних 3 секундах
+      const sec = Math.ceil(left);
+      if (sec <= 3 && S.rest.buzz !== sec) { S.rest.buzz = sec; haptic('rigid'); if (S.sound) tickSound(); }
       const bar = document.querySelector('.rest-bar i');
       if (bar) bar.style.width = Math.min(100, left * 1000 / S.rest.total * 100) + '%';
     }
@@ -754,6 +813,9 @@ VIEWS.done = ({ id }) => {
   const r = S.history.find(x => x.id === id);
   if (!r) { nav = [{ v: 'home' }]; return VIEWS.home(); }
   const sets = r.ex.reduce((a, e) => a + e.sets.length, 0);
+  const prev = S.history.filter(x => x.pid === r.pid && x.day === r.day && x.date < r.date).pop();
+  const diff = prev && prev.tonnage ? Math.round((r.tonnage - prev.tonnage) / prev.tonnage * 100) : null;
+  const prs = r.prs || [];
   return `<div class="page">
     <div class="done-hero"><div class="ok">${sv('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 46, 2.4)}</div>
       <h1>Тренировка<br>завершена</h1><p class="muted">${esc((prog(r.pid) || {}).title || '')} · день ${esc(r.day)}</p></div>
@@ -762,10 +824,35 @@ VIEWS.done = ({ id }) => {
       <div class="stat"><b>${fmtTon(r.tonnage)}</b><span>тоннаж</span></div>
       <div class="stat"><b>${sets}</b><span>${plural(sets, 'подход', 'подхода', 'подходов')}</span></div>
     </div>
+    ${diff !== null && r.tonnage ? `<div class="cmp ${diff >= 0 ? 'up' : 'down'}">${diff >= 0 ? '▲' : '▼'} ${diff >= 0 ? '+' : ''}${diff}% тоннажа<small>к прошлому дню ${esc(r.day)} (${fmtTon(prev.tonnage)})</small></div>` : ''}
+    ${prs.length ? `<div class="prs"><div class="sec-title">🏆 ${prs.length === 1 ? 'Новый рекорд' : 'Новые рекорды'}</div>
+      ${prs.map(p => `<div class="pr-row"><span>${esc(exName(p.id))}</span><b>${fmtNum(p.w)} кг × ${fmtNum(p.r)}</b><small>${p.kind === 'w' ? 'рекорд веса' : 'лучший подход'}</small></div>`).join('')}</div>` : ''}
     ${recordCard(r, false)}
-    <button class="btn" data-act="tab" data-arg="home">Отлично</button>
+    <button class="btn" data-act="share-rec" data-arg="${r.id}">${I.share || ''}Поделиться</button>
+    <button class="btn ghost" data-act="tab" data-arg="home">Отлично</button>
   </div>`;
 };
+
+// текст для «Поделиться»
+function shareText(r) {
+  const sets = r.ex.reduce((a, e) => a + e.sets.length, 0);
+  const lines = [`💪 Тренировка в FORMA`, `${(prog(r.pid) || {}).title || ''} · день ${r.day}`, '',
+    `⏱ ${fmtClock(r.dur)}   🏋️ ${fmtTon(r.tonnage)}   ✅ ${sets} ${plural(sets, 'подход', 'подхода', 'подходов')}`];
+  if ((r.prs || []).length) {
+    lines.push('', '🏆 Рекорды:');
+    r.prs.forEach(p => lines.push(`• ${exName(p.id)}: ${fmtNum(p.w)} кг × ${fmtNum(p.r)}`));
+  }
+  return lines.join('\n');
+}
+function shareRec(id) {
+  const r = S.history.find(x => x.id === id);
+  if (!r) return;
+  const link = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}` : location.origin + location.pathname;
+  const url = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText(r))}`;
+  if (inTG && tgv('6.1')) tg.openTelegramLink(url);
+  else if (navigator.share) navigator.share({ text: shareText(r), url: link }).catch(() => {});
+  else window.open(url, '_blank');
+}
 
 function recordCard(r, withDelete = true) {
   const p = prog(r.pid);
@@ -867,14 +954,26 @@ function tonnageView() {
 }
 
 const MEAS = [['weight', 'Вес тела', 'кг'], ['chest', 'Грудь', 'см'], ['waist', 'Талия', 'см'], ['hips', 'Бёдра', 'см'], ['arm', 'Бицепс', 'см'], ['thigh', 'Бедро', 'см']];
+// график выбранного замера + изменение с первого замера
+function measureChart() {
+  const avail = MEAS.filter(([k]) => S.measures.filter(m => m[k]).length > 1);
+  if (!avail.length) return '';
+  const k = avail.some(([x]) => x === ui.measK) ? ui.measK : avail[0][0];
+  const [, label, unit] = MEAS.find(([x]) => x === k);
+  const vals = S.measures.filter(m => m[k]);
+  const d = vals[vals.length - 1][k] - vals[0][k];
+  return `<div class="sec-title" style="margin-top:24px">Динамика</div>
+    ${avail.length > 1 ? `<div class="chips">${avail.map(([x, l]) => `<button class="chip ${x === k ? 'on' : ''}" data-act="meas-k" data-arg="${x}">${l}</button>`).join('')}</div>` : ''}
+    <div class="rec meas-chart"><div class="rec-h"><div><b>${label}</b><small>с первого замера: <span class="${d > 0 ? 'plus' : d < 0 ? 'minus' : ''}">${d > 0 ? '+' : ''}${fmtNum(d)} ${unit}</span></small></div></div>
+    ${lineChart(vals.slice(-16).map(m => ({ t: shortDate(m.date), v: m[k] })), unit)}</div>`;
+}
 function measureView() {
   const last = S.measures[S.measures.length - 1] || {};
-  const first = S.measures[0] || {};
   const list = S.measures.map((m, i) => ({ m, i })).reverse();
   return `<div class="form-grid">${MEAS.map(([k, l, u]) => `<div class="mfield"><label>${l}</label>
       <div><input inputmode="decimal" data-m="${k}" placeholder="${last[k] ? fmtNum(last[k]) : '—'}"><span>${u}</span></div></div>`).join('')}</div>
     <button class="btn" data-act="save-measure">Сохранить замер</button>
-    ${S.measures.length > 1 && first.weight && last.weight ? `<p class="muted" style="margin:16px 4px 0">Вес с первого замера: <b style="color:#fff">${last.weight - first.weight > 0 ? '+' : ''}${fmtNum(last.weight - first.weight)} кг</b></p>` : ''}
+    ${measureChart()}
     <div class="sec-title" style="margin-top:24px">История замеров</div>
     ${list.length ? list.map(({ m, i }) => {
       const d = new Date(m.date);
@@ -1056,7 +1155,9 @@ VIEWS.exinfo = ({ id }) => {
       <button data-act="lib-tech" data-arg="${id}">${I.play}<span>Техника</span></button>
       <button data-act="lib-hist" data-arg="${id}">${I.history}<span>История</span></button>
     </div>
-    ${best ? `<div class="stats"><div class="stat"><b>${best}</b><span>последний максимум</span></div></div>` : ''}
+    ${(() => { const st = exStats(id); return st.best ? `<div class="stats two">
+      <div class="stat"><b>${fmtNum(st.maxW)} кг</b><span>🏆 рекорд веса</span></div>
+      <div class="stat"><b>${fmtNum(st.best.w)} × ${fmtNum(st.best.r)}</b><span>лучший подход</span></div></div>` : best ? `<div class="stats"><div class="stat"><b>${best}</b><span>последний максимум</span></div></div>` : ''; })()}
     ${inProgs.length ? `<div class="label">Есть в программах</div><div class="list">${inProgs.map(p =>
       `<button data-act="open-program" data-arg="${p.id}"><div>${p.emoji} ${esc(p.title)}</div>${I.fwd}</button>`).join('')}</div>` : ''}
   </div>`;
@@ -1069,12 +1170,74 @@ function techSheet(id, extra = '') {
     <button class="btn ghost" data-act="sheet-close">Понятно</button>`);
 }
 
+/* ---------- Прогресс и рекорды ---------- */
+// расчётный максимум на 1 повтор (формула Эпли) — чтобы сравнивать подходы с разными повторами
+const e1rm = (w, r) => w * (1 + r / 30);
+function exStats(id, beforeDate) {
+  let maxW = 0, best = null, n = 0;
+  S.history.forEach(r => {
+    if (beforeDate && r.date >= beforeDate) return;
+    const e = r.ex.find(x => x.id === id);
+    if (!e || isCardio(e)) return;
+    n++;
+    e.sets.forEach(x => {
+      if (x.w > maxW) maxW = x.w;
+      const v = e1rm(x.w, x.r);
+      if (x.w && (!best || v > best.v)) best = { v, w: x.w, r: x.r };
+    });
+  });
+  return { maxW, best, n };
+}
+// новые рекорды в тренировке: по весу или (если вес не вырос) по лучшему подходу
+function findRecords(ex, date) {
+  const out = [];
+  ex.forEach(e => {
+    if (isCardio(e)) return;
+    const prev = exStats(e.id, date);
+    if (!prev.n || !prev.best) return; // первый раз — не рекорд
+    const maxW = Math.max(0, ...e.sets.map(x => x.w));
+    if (maxW > prev.maxW) { const s = e.sets.find(x => x.w === maxW); out.push({ id: e.id, kind: 'w', w: maxW, r: s.r }); return; }
+    const top = e.sets.filter(x => x.w).reduce((b, x) => (!b || e1rm(x.w, x.r) > e1rm(b.w, b.r) ? x : b), null);
+    if (top && e1rm(top.w, top.r) > prev.best.v + 0.01) out.push({ id: e.id, kind: 'set', w: top.w, r: top.r });
+  });
+  return out;
+}
+
+// линейный график: pts = [{ t: подпись, v: число }]
+function lineChart(pts, unit) {
+  if (pts.length < 2) return '';
+  const W = 320, H = 130, PX = 10, PT = 24, PB = 10;
+  const vs = pts.map(p => p.v), mn = Math.min(...vs), mx = Math.max(...vs), span = mx - mn || 1;
+  const xy = pts.map((p, i) => [PX + (W - 2 * PX) * i / (pts.length - 1), PT + (H - PT - PB) * (1 - (p.v - mn) / span)]);
+  const line = xy.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+  const area = `${line} L${xy[xy.length - 1][0].toFixed(1)} ${H} L${xy[0][0].toFixed(1)} ${H} Z`;
+  const iMax = vs.indexOf(mx), [lx, ly] = xy[xy.length - 1], [mxX, mxY] = xy[iMax];
+  const anchor = x => x < 40 ? 'start' : x > W - 40 ? 'end' : 'middle';
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${H}">
+      <defs><linearGradient id="cg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c6ff3d" stop-opacity=".28"/><stop offset="1" stop-color="#c6ff3d" stop-opacity="0"/></linearGradient></defs>
+      <path d="${area}" fill="url(#cg)"/><path d="${line}" fill="none" stroke="#c6ff3d" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+      ${xy.map(([x, y]) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#000" stroke="#c6ff3d" stroke-width="2"/>`).join('')}
+      ${iMax !== xy.length - 1 ? `<text x="${mxX.toFixed(1)}" y="${(mxY - 9).toFixed(1)}" text-anchor="${anchor(mxX)}" class="ct mute">${fmtNum(mx)}</text>` : ''}
+      <text x="${lx.toFixed(1)}" y="${(ly - 9).toFixed(1)}" text-anchor="end" class="ct">${fmtNum(vs[vs.length - 1])} ${unit}</text>
+    </svg><div class="chart-x"><span>${esc(pts[0].t)}</span><span>${esc(pts[pts.length - 1].t)}</span></div></div>`;
+}
+const shortDate = d => { d = new Date(d); return `${d.getDate()} ${MONTHS_G[d.getMonth()].slice(0, 3)}`; };
+
 function historySheet(id) {
-  const items = S.history.filter(r => r.ex.some(e => e.id === id)).slice(-15).reverse();
-  openSheet(`<h3>История · ${esc(exName(id))}</h3>${items.length ? items.map(r => {
+  const all = S.history.filter(r => r.ex.some(e => e.id === id));
+  const items = all.slice(-15).reverse();
+  const cardio = exMuscle(id) === 'кардио';
+  const pts = cardio ? [] : all.slice(-12).map(r => ({ t: shortDate(r.date), v: Math.max(0, ...r.ex.find(x => x.id === id).sets.map(x => num(x.w))) })).filter(p => p.v > 0);
+  const st = cardio ? null : exStats(id);
+  const head = st && st.best ? `<div class="stats two">
+      <div class="stat"><b>${fmtNum(st.maxW)} кг</b><span>🏆 рекорд веса</span></div>
+      <div class="stat"><b>${fmtNum(st.best.w)} × ${fmtNum(st.best.r)}</b><span>лучший подход</span></div></div>
+    ${pts.length > 1 ? `<div class="sec-title">Рабочий вес<small>макс. за тренировку</small></div>${lineChart(pts, 'кг')}` : ''}` : '';
+  openSheet(`<h3>История · ${esc(exName(id))}</h3>${head}${items.length ? items.map(r => {
     const e = r.ex.find(x => x.id === id), d = new Date(r.date);
     const best = isCardio(e) ? 0 : Math.max(...e.sets.map(x => num(x.w)));
-    return `<div class="hist-item"><b>${d.getDate()} ${MONTHS_G[d.getMonth()]}</b>${best ? ` <span class="kg">макс ${fmtNum(best)} кг</span>` : ''}
+    const pr = (r.prs || []).some(p => p.id === id);
+    return `<div class="hist-item"><b>${d.getDate()} ${MONTHS_G[d.getMonth()]}</b>${best ? ` <span class="kg">макс ${fmtNum(best)} кг</span>` : ''}${pr ? ' <span class="pr">🏆 рекорд</span>' : ''}
       <div>${e.sets.map(x => fmtSet(e, x)).join(' · ')}</div>${e.note ? `<div class="muted">${esc(e.note)}</div>` : ''}</div>`;
   }).join('') : `<p class="muted">Вы ещё не делали это упражнение. После тренировки здесь появятся веса и повторы.</p>`}`);
 }
@@ -1094,8 +1257,9 @@ VIEWS.profile = () => {
     </div>
     <div class="label">Настройки</div>
     <div class="list">
-      <button data-act="sound"><div>Звук после отдыха<small>Сигнал, когда таймер закончился</small></div><span class="switch ${S.sound ? 'on' : ''}"></span></button>
+      <button data-act="sound"><div>Звук таймера отдыха<small>Отсчёт 3-2-1 и сигнал в конце. Вибрация работает всегда</small></div><span class="switch ${S.sound ? 'on' : ''}"></span></button>
     </div>
+    ${BOT_API && inTG ? remindBlock() : ''}
     <div class="label">Резервная копия</div>
     <div class="list">
       <button data-act="backup-copy"><div>Скопировать данные<small>Вставьте в «Избранное» Telegram — так копия не потеряется</small></div>${I.fwd}</button>
@@ -1105,6 +1269,48 @@ VIEWS.profile = () => {
     <button class="btn danger" data-act="reset">Удалить все данные</button>
   </div>`;
 };
+
+/* ---------- Напоминания от бота ---------- */
+const REM_TIMES = Array.from({ length: 38 }, (_, i) => { const m = 5 * 60 + i * 30; return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; });
+function remindBlock() {
+  const r = S.remind;
+  return `<div class="label">Напоминания</div>
+    <div class="list">
+      <button data-act="rem-on"><div>Напоминать о тренировке<small>Бот пришлёт сообщение с тренировкой дня</small></div><span class="switch ${r.on ? 'on' : ''}"></span></button>
+    </div>
+    ${r.on ? `<div class="rem-box">
+      <div class="rem-days">${WD.map((w, i) => `<button class="${r.days.includes(i) ? 'on' : ''}" data-act="rem-day" data-arg="${i}">${w}</button>`).join('')}</div>
+      <label class="rem-time"><span>Время</span><select data-rem-time>${REM_TIMES.map(t => `<option ${t === r.time ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+    </div>` : ''}`;
+}
+// активная программа: та, что сейчас идёт или по которой была последняя тренировка
+function activeProgram() {
+  if (S.session) return prog(S.session.pid);
+  for (let i = S.history.length - 1; i >= 0; i--) { const p = prog(S.history[i].pid); if (p) return p; }
+  return S.my.map(prog).find(Boolean) || null;
+}
+function remindText() {
+  const p = activeProgram();
+  if (!p) return '💪 Время тренировки! Открой FORMA и выбери программу.';
+  const key = defaultDay(p), day = p.plan.find(d => d.key === key);
+  const names = planItems(p.id, day).filter(x => !isCardio(x)).map(x => exName(x.id));
+  return `💪 Сегодня тренировка!\n<b>${esc(p.title)} · день ${esc(key)}</b>\n\n${names.map(n => '• ' + esc(n)).join('\n')}`;
+}
+let botTimer;
+function botSync(force) {
+  if (!BOT_API || !inTG) return;
+  clearTimeout(botTimer);
+  botTimer = setTimeout(async () => {
+    const body = { remind: S.remind, tz: new Date().getTimezoneOffset(), text: S.remind.on ? remindText() : '' };
+    const sig = JSON.stringify(body);
+    if (!force && sig === S.remindSent) return;
+    try {
+      const r = await fetch(BOT_API + '/api/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, initData: tg.initData }) });
+      if (r.ok) { S.remindSent = sig; save(); } else if (force) toast('Не удалось сохранить напоминания');
+    } catch (e) { if (force) toast('Нет связи с ботом'); }
+  }, 600);
+}
+function remindChanged() { save(); render(); botSync(true); }
 
 /* =====================================================================
    ШТОРКИ (bottom sheet)
@@ -1222,6 +1428,13 @@ const ACT = {
     haptic('select'); render(); window.scrollTo(0, 0);
   },
   check: k => toggleSet(+k),
+  'share-rec': id => shareRec(id),
+  'apply-sugg': () => {
+    const e = curEx(), sg = suggestion(e);
+    if (!sg) return;
+    e.sets.forEach(x => { if (!x.done) x.w = String(sg.w); });
+    save(); haptic('success'); render();
+  },
   'add-set': () => {
     const e = curEx(), ls = e.sets[e.sets.length - 1];
     e.sets.push({ w: ls ? ls.w : '', r: '', done: false });
@@ -1299,6 +1512,7 @@ const ACT = {
   'confirm-no': () => closeSheet(),
   'sheet-pick': i => { const fn = sheetPick; closeSheet(); if (fn) fn(+i); },
   'sum-tab': k => { ui.sumTab = k; render(); },
+  'meas-k': k => { ui.measK = k; haptic('select'); render(); },
   cal: d => { ui.calMonth = new Date(ui.calMonth.getFullYear(), ui.calMonth.getMonth() + Number(d), 1); render(); },
   'sel-day': k => { ui.selDay = k; haptic('select'); render(); },
   'del-rec': async id => {
@@ -1315,6 +1529,19 @@ const ACT = {
   'del-measure': async i => {
     if (!await confirmAsync('Удалить замер?', 'Удалить', true)) return;
     S.measures.splice(+i, 1); save(); render();
+  },
+  'rem-on': () => {
+    S.remind.on = !S.remind.on;
+    haptic('select');
+    // разрешение боту писать первым (если пользователь ещё не нажимал /start)
+    if (S.remind.on && tgv('6.9')) try { tg.requestWriteAccess(); } catch (e) { /* пусто */ }
+    remindChanged();
+    if (S.remind.on) toast('Напоминания включены');
+  },
+  'rem-day': i => {
+    const d = S.remind.days, k = d.indexOf(+i);
+    if (k < 0) d.push(+i); else if (d.length > 1) d.splice(k, 1); else { toast('Нужен хотя бы один день'); return; }
+    d.sort(); haptic('select'); remindChanged();
   },
   sound: () => { S.sound = !S.sound; if (S.sound) { unlockAudio(); beep(); } save(); render(); },
   'backup-copy': async () => { toast(await copyText(JSON.stringify(S)) ? 'Скопировано — вставьте в «Избранное»' : 'Не удалось скопировать'); },
@@ -1401,6 +1628,7 @@ document.addEventListener('keydown', e => {
 });
 
 document.addEventListener('change', e => {
+  if (e.target.matches('[data-rem-time]')) { S.remind.time = e.target.value; remindChanged(); return; }
   if (e.target.id === 'restore-file' && e.target.files[0]) {
     const reader = new FileReader();
     reader.onload = () => restoreFrom(String(reader.result));
@@ -1409,8 +1637,10 @@ document.addEventListener('change', e => {
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { requestWake(); tick(); }
-  else save();
+  // вернулись в приложение — подтянуть изменения с другого устройства;
+  // свернули — сразу отправить в облако (таймер на 1,5 с может не успеть)
+  if (document.visibilityState === 'visible') { requestWake(); tick(); cloudLoad(); }
+  else { save(); clearTimeout(cloudTimer); if (cloud) cloudSave(); }
 });
 
 /* =====================================================================
@@ -1424,11 +1654,13 @@ if (inTG) {
     if (tgv('7.10')) tg.setBottomBarColor('#000000');
     if (tgv('7.7')) tg.disableVerticalSwipes();
     if (tgv('6.2')) tg.enableClosingConfirmation();
+    if (tgv('8.0')) { tg.onEvent('activated', cloudLoad); tg.onEvent('deactivated', () => { clearTimeout(cloudTimer); if (cloud) cloudSave(); }); }
   } catch (e) { /* старый клиент */ }
 }
 
 render();
 cloudLoad();
 requestWake();
+botSync(); // обновить текст напоминания (следующий день программы)
 
 window.addEventListener('scroll', () => { if (menuEl && Math.abs(window.scrollY - menuY) > 12) closeMenu(); }, { passive: true });
