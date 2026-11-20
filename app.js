@@ -321,15 +321,37 @@ function dayRing(p) {
   return `<div class="pcard-badge"><svg viewBox="0 0 46 46">${arcs}</svg><span>${esc(next)}</span></div>`;
 }
 
+// Картинка программы: media/programs/<id>.webp (вырезанный атлет на прозрачном фоне).
+// Пока картинки нет — справа силуэт упражнения из программы.
+const PROG_IMG = typeof PROGRAM_IMAGES !== 'undefined' ? PROGRAM_IMAGES : {};
+function progArt(p) {
+  if (PROG_IMG[p.id]) return `<img class="pc-img" src="media/programs/${p.id}.${PROG_IMG[p.id]}" alt="" loading="lazy">`;
+  for (const d of p.plan) for (const e of d.ex) {
+    if (hasFlow(e.id)) return `<img class="pc-sil" src="${flowSrc(e.id, 1)}" alt="" loading="lazy">`;
+  }
+  return `<div class="pcard-art">${p.emoji}</div>`;
+}
+const TAG_IC = {
+  days: sv('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>', 15, 2),
+  place: sv('<path d="M4 9v6M7 7v10M17 7v10M20 9v6M7 12h10"/>', 15, 2),
+  exp: sv('<path d="M5 20V14M10 20V10M15 20V6M20 20V3M3 20h18"/>', 15, 2),
+  since: sv('<rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M9 3v4M15 3v4"/>', 15, 2),
+};
 function programCard(p) {
   const on = S.my.includes(p.id);
-  const tags = [`${p.days} ${plural(p.days, 'день', 'дня', 'дней')}`, p.place, p.exp, p.since, p.sex];
+  const days = `${p.days} ${plural(p.days, 'день', 'дня', 'дней')}`;
+  const tags = [['days', days], ['place', p.place], ['exp', p.exp], ['since', p.since]];
   return `<div class="pcard" role="button" data-act="open-program" data-arg="${p.id}" style="--h:${p.hue}">
+    <div class="pc-stripes"><i></i><i></i></div>
+    ${progArt(p)}
     <button class="bm" data-act="toggle-my" data-arg="${p.id}" aria-label="В мои программы">${on ? I.bmFill : I.bm}</button>
     ${dayRing(p)}
-    <div class="pcard-art">${p.emoji}</div>
-    <h2 class="pcard-title">${esc(p.title)}</h2>
-    <div class="tags">${tags.map(t => `<span>${esc(t)}</span>`).join('')}</div>
+    <div class="pc-body">
+      <span class="pc-pill">${days}</span>
+      <h2 class="pcard-title">${esc(p.title)}</h2>
+      <p class="pcard-desc">${esc(p.desc)}</p>
+    </div>
+    <div class="tags">${tags.map(([k, t]) => `<span>${TAG_IC[k]}${esc(t)}</span>`).join('')}</div>
   </div>`;
 }
 
