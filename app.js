@@ -321,11 +321,23 @@ function dayRing(p) {
   return `<div class="pcard-badge"><svg viewBox="0 0 46 46">${arcs}</svg><span>${esc(next)}</span></div>`;
 }
 
-// Картинка программы: media/programs/<id>.webp (вырезанный атлет на прозрачном фоне).
-// Пока картинки нет — справа силуэт упражнения из программы.
-const PROG_IMG = typeof PROGRAM_IMAGES !== 'undefined' ? PROGRAM_IMAGES : {};
+// Картинка программы: media/programs/<номер>.webp (атлет на прозрачном фоне).
+// 01 спина-бицепс, 02 тяга штанги, 03 фулбоди с гантелей, 04 грудь, 05 плечи, 06 спина,
+// 07 ноги, 08 ягодицы, 09 девушка спереди, 10 девушка сзади, 11 гантели и скамья (дома).
+// Нет картинки — справа силуэт упражнения из программы.
+const PROG_IMG = {
+  arnold: '01', ppl: '02', pushpull_m: '02', ulppl_m: '02',
+  fb_m: '03', fb2_m: '03', fb_fast_m: '03', fb2_fast_m: '03', fb_rest_m: '03',
+  split3_m: '04', upper_m: '04', acc_chest_m: '04',
+  split5_m: '05', acc_arms_m: '05', acc_armsdelts_m: '05', acc_delts_m: '05',
+  split4_m: '06', acc_back_m: '06', acc_legs_m: '07',
+  acc_glutes_f: '08', split4_f: '08', fb_fast_f: '08',
+  fb_f: '09', fb2_f: '09', pushpull_f: '09', fb2_fast_f: '09',
+  split3_f: '10', upper_f: '10',
+  fb2_db_m: '11', fb_db_f: '11',
+};
 function progArt(p) {
-  if (PROG_IMG[p.id]) return `<img class="pc-img" src="media/programs/${p.id}.${PROG_IMG[p.id]}" alt="" loading="lazy">`;
+  if (PROG_IMG[p.id]) return `<img class="pc-img" src="media/programs/${PROG_IMG[p.id]}.webp" alt="" loading="lazy">`;
   for (const d of p.plan) for (const e of d.ex) {
     if (hasFlow(e.id)) return `<img class="pc-sil" src="${flowSrc(e.id, 1)}" alt="" loading="lazy">`;
   }
