@@ -352,7 +352,8 @@ const TAG_IC = {
 function programCard(p) {
   const on = S.my.includes(p.id);
   const days = `${p.days} ${plural(p.days, 'день', 'дня', 'дней')}`;
-  const tags = [['days', days], ['place', p.place], ['exp', p.exp], ['since', p.since]];
+  const EXP_SHORT = { 'Только опытным': 'Опытным', 'Новичку и опытным': 'Любой опыт' };
+  const tags = [['days', days], ['place', p.place], ['exp', EXP_SHORT[p.exp] || p.exp], ['since', p.since]];
   return `<div class="pcard" role="button" data-act="open-program" data-arg="${p.id}" style="--h:${p.hue}">
     <div class="pc-stripes"><i></i><i></i></div>
     ${progArt(p)}
