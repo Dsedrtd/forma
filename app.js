@@ -58,6 +58,10 @@ const defaultState = () => ({
   goal: 'keep',    // цель: cut / keep / bulk
   remind: { on: false, days: [0, 2, 4], time: '19:00' }, // напоминания от бота (0 = пн)
   remindSent: '',  // что последний раз отправили на сервер бота
+  weekGoal: 2,     // тренировок в неделю для серии
+  streakWarn: true, // бот предупреждает в субботу, если серия под угрозой
+  restPush: true,  // бот пишет в чат, когда отдых закончился, а приложение свёрнуто
+  ach: {},         // полученные достижения: id -> дата
 });
 
 // v2: сплит Арнольда переписан — старые замены упражнений в нём больше не подходят
@@ -272,7 +276,7 @@ VIEWS.home = () => {
 
   return `<div class="page has-nav">
     <header class="home-head">
-      <span class="head-spacer"></span>
+      ${streakChip()}
       <div class="logo">FOR<b>MA</b></div>
       <button class="icon-btn" data-act="tab" data-arg="profile">${I.user}</button>
     </header>
@@ -535,6 +539,7 @@ async function finishSession() {
   };
   rec.prs = findRecords(ex, rec.date);
   S.history.push(rec);
+  rec.ach = checkAch(true).map(a => a.id);
   botSync();
   ex.forEach(e => { S.last[e.id] = { w: e.sets.map(x => x.w), r: e.sets.map(x => x.r), date: rec.date }; });
   S.session = null; S.rest = null;
@@ -720,6 +725,34 @@ function itemAt(pid, dayKey, i) {
   return planItems(pid, day)[i];
 }
 
+/* ---------- Конец отдыха — сообщение от бота, если приложение свёрнуто ---------- */
+let restPushed = false;
+function restPushSend(payload) {
+  if (!BOT_API || !inTG) return;
+  const data = JSON.stringify({ ...payload, initData: tg.initData });
+  // sendBeacon успевает уйти, даже когда приложение сворачивается
+  const ok = navigator.sendBeacon && navigator.sendBeacon(BOT_API + '/api/rest', new Blob([data], { type: 'text/plain' }));
+  if (!ok) fetch(BOT_API + '/api/rest', { method: 'POST', body: data, keepalive: true }).catch(() => {});
+}
+function restPushArm() {
+  if (!S.restPush || !S.rest || !S.session) return;
+  const left = S.rest.endsAt - Date.now();
+  if (left < 4000) return;
+  const v = cur(), e = v.v === 'ex' ? S.session.exercises[v.i] : null;
+  let text = '⏱ <b>Отдых окончен</b> — пора на следующий подход!';
+  if (e) {
+    const k = e.sets.findIndex(x => !x.done);
+    if (k >= 0) text += `\n\n${esc(exName(e.id))} — подход ${k + 1} из ${e.sets.length}`;
+  }
+  restPushSend({ at: S.rest.endsAt, text });
+  restPushed = true;
+}
+function restPushCancel() {
+  if (!restPushed) return;
+  restPushed = false;
+  restPushSend({ cancel: true });
+}
+
 /* ---------- Таймер отдыха ---------- */
 function startRest(sec) {
   unlockAudio();
@@ -827,6 +860,9 @@ VIEWS.done = ({ id }) => {
     ${diff !== null && r.tonnage ? `<div class="cmp ${diff >= 0 ? 'up' : 'down'}">${diff >= 0 ? '▲' : '▼'} ${diff >= 0 ? '+' : ''}${diff}% тоннажа<small>к прошлому дню ${esc(r.day)} (${fmtTon(prev.tonnage)})</small></div>` : ''}
     ${prs.length ? `<div class="prs"><div class="sec-title">🏆 ${prs.length === 1 ? 'Новый рекорд' : 'Новые рекорды'}</div>
       ${prs.map(p => `<div class="pr-row"><span>${esc(exName(p.id))}</span><b>${fmtNum(p.w)} кг × ${fmtNum(p.r)}</b><small>${p.kind === 'w' ? 'рекорд веса' : 'лучший подход'}</small></div>`).join('')}</div>` : ''}
+    ${(r.ach || []).length ? `<div class="prs"><div class="sec-title">🏅 ${r.ach.length === 1 ? 'Новое достижение' : 'Новые достижения'}</div>
+      ${r.ach.map(id => ACH.find(a => a.id === id)).filter(Boolean).map(a => `<div class="pr-row"><span>${a.e} ${esc(a.t)}</span><b></b><small>${esc(a.d)}</small></div>`).join('')}</div>` : ''}
+    ${(() => { const st = weekStats(); return st.done === st.goal ? `<div class="cmp up">🔥 Неделя засчитана<small>серия ${st.full} ${plural(st.full, 'неделя', 'недели', 'недель')}</small></div>` : st.done < st.goal ? `<div class="cmp">🔥 ${st.done} из ${st.goal} на этой неделе<small>до зачёта недели ещё ${st.goal - st.done}</small></div>` : ''; })()}
     ${recordCard(r, false)}
     <button class="btn" data-act="share-rec" data-arg="${r.id}">${I.share || ''}Поделиться</button>
     <button class="btn ghost" data-act="tab" data-arg="home">Отлично</button>
@@ -1242,6 +1278,111 @@ function historySheet(id) {
   }).join('') : `<p class="muted">Вы ещё не делали это упражнение. После тренировки здесь появятся веса и повторы.</p>`}`);
 }
 
+/* ---------- Серия недель ---------- */
+// неделя засчитана, если тренировок в ней не меньше цели (S.weekGoal)
+function weekStats() {
+  const goal = S.weekGoal || 2;
+  const cnt = {};
+  S.history.forEach(r => { const k = dkey(mondayOf(r.date)); cnt[k] = (cnt[k] || 0) + 1; });
+  const cur = mondayOf(new Date()), curK = dkey(cur);
+  const done = cnt[curK] || 0;
+  let base = 0;
+  for (let w = addDays(cur, -7); (cnt[dkey(w)] || 0) >= goal; w = addDays(w, -7)) base++;
+  const full = done >= goal ? base + 1 : base;
+  // лучшая серия за всё время
+  let best = 0;
+  const keys = Object.keys(cnt).sort();
+  if (keys.length) {
+    let run = 0;
+    for (let w = mondayOf(keys[0] + 'T12:00:00'); w <= cur; w = addDays(w, 7)) {
+      run = (cnt[dkey(w)] || 0) >= goal ? run + 1 : (dkey(w) === curK ? run : 0);
+      best = Math.max(best, run);
+    }
+  }
+  return { goal, done, base, full, best, wk: curK };
+}
+function streakChip() {
+  const st = weekStats();
+  return `<button class="streak-chip ${st.full ? 'on' : ''}" data-act="streak" aria-label="Серия недель">
+    <span>🔥</span><b>${st.full}</b></button>`;
+}
+function streakSheet() {
+  const st = weekStats();
+  const left = 7 - (new Date().getDay() + 6) % 7; // дней до конца недели, включая сегодня
+  const status = st.done >= st.goal
+    ? `Неделя засчитана ✅ Серия: ${st.full} ${plural(st.full, 'неделя', 'недели', 'недель')}.`
+    : st.base
+      ? `Чтобы не прервать серию из ${st.base} ${plural(st.base, 'недели', 'недель', 'недель')}, нужно ещё ${st.goal - st.done} ${plural(st.goal - st.done, 'тренировка', 'тренировки', 'тренировок')}${left > 1 ? ` — осталось ${left} ${plural(left, 'день', 'дня', 'дней')}, включая сегодня` : ' — сегодня последний день'}.`
+      : `Сделай ${st.goal} ${plural(st.goal, 'тренировку', 'тренировки', 'тренировок')} за неделю — и серия начнётся.`;
+  openSheet(`<div class="streak-hero"><div class="flame">🔥</div><b>${st.full}</b><span>${plural(st.full, 'неделя', 'недели', 'недель')} подряд</span></div>
+    <div class="streak-week">${Array.from({ length: st.goal }, (_, i) => `<i class="${i < st.done ? 'on' : ''}"></i>`).join('')}<small>${st.done} из ${st.goal} на этой неделе</small></div>
+    <p>${status}</p>
+    <div class="stats two"><div class="stat"><b>${st.best}</b><span>лучшая серия</span></div><div class="stat"><b>${st.goal}</b><span>тренировок в неделю — цель</span></div></div>
+    <div class="label">Цель на неделю</div>
+    <div class="goal-pick">${[1, 2, 3, 4, 5, 6].map(n => `<button class="${n === st.goal ? 'on' : ''}" data-act="week-goal" data-arg="${n}">${n}</button>`).join('')}</div>`);
+}
+
+/* ---------- Достижения ---------- */
+const ACH = [
+  { id: 'first', e: '🎉', t: 'Первый шаг', d: 'Завершить первую тренировку', v: s => s.n, max: 1 },
+  { id: 'w10', e: '💪', t: 'Втянулся', d: '10 тренировок', v: s => s.n, max: 10 },
+  { id: 'w25', e: '🏋️', t: 'Завсегдатай', d: '25 тренировок', v: s => s.n, max: 25 },
+  { id: 'w50', e: '🦾', t: 'Железный', d: '50 тренировок', v: s => s.n, max: 50 },
+  { id: 'w100', e: '👑', t: 'Сотня', d: '100 тренировок', v: s => s.n, max: 100 },
+  { id: 'st2', e: '🔥', t: 'Разгон', d: 'Серия 2 недели подряд', v: s => s.best, max: 2 },
+  { id: 'st4', e: '📅', t: 'Месяц без пропусков', d: 'Серия 4 недели подряд', v: s => s.best, max: 4 },
+  { id: 'st8', e: '⚡', t: 'Привычка', d: 'Серия 8 недель подряд', v: s => s.best, max: 8 },
+  { id: 'st12', e: '🌋', t: 'Квартал огня', d: 'Серия 12 недель подряд', v: s => s.best, max: 12 },
+  { id: 'ton1', e: '🪨', t: 'Тонна', d: 'Поднять 1 т за одну тренировку', v: s => s.maxTon / 1000, max: 1 },
+  { id: 'ton5', e: '🚛', t: 'Грузовик', d: 'Поднять 5 т за одну тренировку', v: s => s.maxTon / 1000, max: 5 },
+  { id: 'tot100', e: '🏔️', t: 'Сто тонн', d: 'Всего поднято 100 т', v: s => s.total / 1000, max: 100 },
+  { id: 'pr1', e: '🏆', t: 'Рекордсмен', d: 'Побить свой рекорд', v: s => s.prs, max: 1 },
+  { id: 'pr10', e: '🥇', t: 'Десять рекордов', d: 'Побить 10 рекордов', v: s => s.prs, max: 10 },
+  { id: 'cycle', e: '🔁', t: 'Полный цикл', d: 'Пройти все дни одной программы', v: s => s.cycle, max: 1 },
+  { id: 'var20', e: '🧭', t: 'Разносторонний', d: 'Сделать 20 разных упражнений', v: s => s.variety, max: 20 },
+  { id: 'early', e: '🌅', t: 'Ранняя пташка', d: 'Начать тренировку до 8 утра', v: s => s.early, max: 1 },
+  { id: 'late', e: '🌙', t: 'Ночная смена', d: 'Начать тренировку после 21:00', v: s => s.late, max: 1 },
+  { id: 'meas', e: '📏', t: 'Под контролем', d: 'Записать 5 замеров', v: s => s.meas, max: 5 },
+];
+function achStats() {
+  const ex = new Set(), days = {};
+  let maxTon = 0, total = 0, prs = 0, early = 0, late = 0;
+  S.history.forEach(r => {
+    maxTon = Math.max(maxTon, r.tonnage); total += r.tonnage; prs += (r.prs || []).length;
+    r.ex.forEach(e => ex.add(e.id));
+    (days[r.pid] = days[r.pid] || new Set()).add(r.day);
+    const h = new Date(r.date).getHours();
+    if (h < 8) early = 1;
+    if (h >= 21) late = 1;
+  });
+  const cycle = Object.entries(days).some(([pid, set]) => { const p = prog(pid); return p && p.plan.every(d => set.has(d.key)); }) ? 1 : 0;
+  return { n: S.history.length, best: weekStats().best, maxTon, total, prs, cycle, variety: ex.size, early, late, meas: S.measures.length };
+}
+// проверить и выдать новые достижения; возвращает список новых
+function checkAch(silent) {
+  const st = achStats(), fresh = [];
+  ACH.forEach(a => { if (!S.ach[a.id] && a.v(st) >= a.max) { S.ach[a.id] = new Date().toISOString(); fresh.push(a); } });
+  if (fresh.length) {
+    save();
+    if (!silent) { haptic('success'); toast(`${fresh[0].e} Достижение: ${fresh[0].t}${fresh.length > 1 ? ` и ещё ${fresh.length - 1}` : ''}`); }
+  }
+  return fresh;
+}
+VIEWS.ach = () => {
+  const st = achStats();
+  const got = ACH.filter(a => S.ach[a.id]).length;
+  return `<div class="page">
+    <div class="topbar"><button class="icon-btn" data-act="back">${I.back}</button><span></span><span></span></div>
+    <h1 class="display" style="font-size:26px;margin:4px 0 4px">Достижения</h1>
+    <p class="muted" style="margin:0 0 18px">${got} из ${ACH.length}</p>
+    <div class="ach-grid">${ACH.map(a => {
+      const on = !!S.ach[a.id], v = Math.min(a.v(st), a.max);
+      return `<div class="ach ${on ? 'on' : ''}"><div class="ach-ic">${a.e}</div><b>${a.t}</b><small>${a.d}</small>
+        ${on ? `<em>${shortDate(S.ach[a.id])}</em>` : `<div class="ach-bar"><i style="width:${(v / a.max * 100).toFixed(0)}%"></i></div>`}</div>`;
+    }).join('')}</div>
+  </div>`;
+};
+
 /* ---------- Профиль ---------- */
 VIEWS.profile = () => {
   const user = inTG && tg.initDataUnsafe && tg.initDataUnsafe.user;
@@ -1255,6 +1396,8 @@ VIEWS.profile = () => {
       <div class="stat"><b>${fmtTon(total)}</b><span>поднято</span></div>
       <div class="stat"><b>${Math.round(time / 3600)} ч</b><span>в зале</span></div>
     </div>
+    <button class="ach-entry" data-act="open-ach"><span class="ach-row">${ACH.filter(a => S.ach[a.id]).slice(-4).map(a => `<i>${a.e}</i>`).join('') || '<i>🏅</i>'}</span>
+      <div><b>Достижения</b><small>${ACH.filter(a => S.ach[a.id]).length} из ${ACH.length}</small></div>${I.fwd}</button>
     <div class="label">Настройки</div>
     <div class="list">
       <button data-act="sound"><div>Звук таймера отдыха<small>Отсчёт 3-2-1 и сигнал в конце. Вибрация работает всегда</small></div><span class="switch ${S.sound ? 'on' : ''}"></span></button>
@@ -1277,6 +1420,8 @@ function remindBlock() {
   return `<div class="label">Напоминания</div>
     <div class="list">
       <button data-act="rem-on"><div>Напоминать о тренировке<small>Бот пришлёт сообщение с тренировкой дня</small></div><span class="switch ${r.on ? 'on' : ''}"></span></button>
+      <button data-act="streak-warn"><div>Серия под угрозой<small>В субботу вечером, если на неделе не хватает тренировок</small></div><span class="switch ${S.streakWarn ? 'on' : ''}"></span></button>
+      <button data-act="rest-push"><div>Конец отдыха в чат<small>Если приложение свёрнуто, бот напишет, что пора на подход</small></div><span class="switch ${S.restPush ? 'on' : ''}"></span></button>
     </div>
     ${r.on ? `<div class="rem-box">
       <div class="rem-days">${WD.map((w, i) => `<button class="${r.days.includes(i) ? 'on' : ''}" data-act="rem-day" data-arg="${i}">${w}</button>`).join('')}</div>
@@ -1301,7 +1446,9 @@ function botSync(force) {
   if (!BOT_API || !inTG) return;
   clearTimeout(botTimer);
   botTimer = setTimeout(async () => {
-    const body = { remind: S.remind, tz: new Date().getTimezoneOffset(), text: S.remind.on ? remindText() : '' };
+    const st = weekStats();
+    const body = { remind: S.remind, tz: new Date().getTimezoneOffset(), text: S.remind.on ? remindText() : '',
+      week: S.streakWarn ? { wk: st.wk, done: st.done, goal: st.goal, base: st.base, full: st.full } : null };
     const sig = JSON.stringify(body);
     if (!force && sig === S.remindSent) return;
     try {
@@ -1506,7 +1653,7 @@ const ACT = {
     picker('Таймер отдыха', opts.map(sec => ({ sec, label: `${fmtClock(sec)}`, sub: sec === e.rest ? 'по плану для упражнения' : '' })), it => startRest(it.sec));
   },
   'rest-add': () => { if (S.rest) { S.rest.endsAt += 15000; S.rest.total += 15000; save(); tick(); } },
-  'rest-skip': () => { S.rest = null; save(); renderRest(); },
+  'rest-skip': () => { S.rest = null; save(); renderRest(); restPushCancel(); },
   'sheet-close': () => closeSheet(),
   'confirm-yes': () => { const r = confirmResolve; confirmResolve = null; closeSheet(); if (r) r(true); },
   'confirm-no': () => closeSheet(),
@@ -1524,12 +1671,17 @@ const ACT = {
     let any = false;
     document.querySelectorAll('[data-m]').forEach(inp => { const v = num(inp.value); if (v > 0) { m[inp.dataset.m] = v; any = true; } });
     if (!any) { toast('Введите хотя бы одно значение'); return; }
-    S.measures.push(m); save(); haptic('success'); render(); toast('Замер сохранён');
+    S.measures.push(m); save(); haptic('success'); render(); toast('Замер сохранён'); setTimeout(() => checkAch(), 1200);
   },
   'del-measure': async i => {
     if (!await confirmAsync('Удалить замер?', 'Удалить', true)) return;
     S.measures.splice(+i, 1); save(); render();
   },
+  streak: () => streakSheet(),
+  'week-goal': n => { S.weekGoal = +n; save(); haptic('select'); checkAch(); botSync(); streakSheet(); render(); },
+  'open-ach': () => go({ v: 'ach' }),
+  'streak-warn': () => { S.streakWarn = !S.streakWarn; haptic('select'); remindChanged(); },
+  'rest-push': () => { S.restPush = !S.restPush; haptic('select'); save(); render(); },
   'rem-on': () => {
     S.remind.on = !S.remind.on;
     haptic('select');
@@ -1639,8 +1791,8 @@ document.addEventListener('change', e => {
 document.addEventListener('visibilitychange', () => {
   // вернулись в приложение — подтянуть изменения с другого устройства;
   // свернули — сразу отправить в облако (таймер на 1,5 с может не успеть)
-  if (document.visibilityState === 'visible') { requestWake(); tick(); cloudLoad(); }
-  else { save(); clearTimeout(cloudTimer); if (cloud) cloudSave(); }
+  if (document.visibilityState === 'visible') { requestWake(); tick(); cloudLoad(); restPushCancel(); }
+  else { save(); clearTimeout(cloudTimer); if (cloud) cloudSave(); restPushArm(); }
 });
 
 /* =====================================================================
@@ -1654,13 +1806,17 @@ if (inTG) {
     if (tgv('7.10')) tg.setBottomBarColor('#000000');
     if (tgv('7.7')) tg.disableVerticalSwipes();
     if (tgv('6.2')) tg.enableClosingConfirmation();
-    if (tgv('8.0')) { tg.onEvent('activated', cloudLoad); tg.onEvent('deactivated', () => { clearTimeout(cloudTimer); if (cloud) cloudSave(); }); }
+    if (tgv('8.0')) {
+      tg.onEvent('activated', () => { cloudLoad(); restPushCancel(); });
+      tg.onEvent('deactivated', () => { clearTimeout(cloudTimer); if (cloud) cloudSave(); if (!restPushed) restPushArm(); });
+    }
   } catch (e) { /* старый клиент */ }
 }
 
 render();
 cloudLoad();
 requestWake();
+checkAch(true); // выдать достижения за уже сделанные тренировки
 botSync(); // обновить текст напоминания (следующий день программы)
 
 window.addEventListener('scroll', () => { if (menuEl && Math.abs(window.scrollY - menuY) > 12) closeMenu(); }, { passive: true });

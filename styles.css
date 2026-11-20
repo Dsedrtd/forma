@@ -439,3 +439,39 @@ h1, h2, h3 { margin: 0; }
 .rem-days button.on { background: var(--acc); color: var(--acc-ink); }
 .rem-time { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding: 0 4px; }
 .rem-time select { background: var(--s2); color: var(--text); border: 0; border-radius: 12px; padding: 10px 14px; font: 600 16px var(--body); }
+
+/* ---------- серия недель ---------- */
+.streak-chip { width: 52px; height: 52px; flex: none; border-radius: 50%; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; gap: 2px; font-weight: 800; color: var(--mute); }
+.streak-chip span { font-size: 17px; filter: grayscale(1); opacity: .6; }
+.streak-chip.on { color: #fff; background: #2a1a08; }
+.streak-chip.on span { filter: none; opacity: 1; }
+.streak-hero { text-align: center; padding: 6px 0 14px; }
+.streak-hero .flame { font-size: 54px; line-height: 1; }
+.streak-hero b { display: block; font: 900 44px/1.1 var(--display); margin-top: 6px; }
+.streak-hero span { color: var(--mute); }
+.streak-week { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.streak-week i { width: 30px; height: 10px; border-radius: 5px; background: var(--s3); }
+.streak-week i.on { background: #ff9a3c; }
+.streak-week small { width: 100%; text-align: center; color: var(--mute); margin-top: 4px; }
+.goal-pick { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-bottom: 8px; }
+.goal-pick button { height: 44px; border-radius: 14px; background: var(--s2); font-weight: 700; }
+.goal-pick button.on { background: var(--acc); color: var(--acc-ink); }
+
+/* ---------- достижения ---------- */
+.ach-entry { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; background: var(--s1); border: 1px solid var(--line); border-radius: 22px; padding: 14px 18px; margin-bottom: 18px; }
+.ach-entry > div { flex: 1; }
+.ach-entry b { display: block; }
+.ach-entry small { color: var(--mute); font-size: 13px; }
+.ach-row { display: flex; }
+.ach-row i { font-style: normal; width: 34px; height: 34px; border-radius: 50%; background: var(--s2); display: grid; place-items: center; font-size: 18px; margin-left: -8px; border: 2px solid var(--s1); }
+.ach-row i:first-child { margin-left: 0; }
+.ach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.ach { background: var(--s1); border: 1px solid var(--line); border-radius: 20px; padding: 14px; text-align: center; }
+.ach-ic { width: 58px; height: 58px; margin: 0 auto 8px; border-radius: 50%; background: var(--s2); display: grid; place-items: center; font-size: 28px; filter: grayscale(1); opacity: .45; }
+.ach.on { border-color: #3b4d12; background: #11160a; }
+.ach.on .ach-ic { filter: none; opacity: 1; background: #26330a; }
+.ach b { display: block; font-size: 14px; }
+.ach small { display: block; color: var(--mute); font-size: 12px; margin-top: 3px; line-height: 1.3; }
+.ach em { display: block; font-style: normal; color: var(--acc); font-size: 12px; margin-top: 8px; }
+.ach-bar { height: 4px; border-radius: 2px; background: var(--s3); margin-top: 10px; overflow: hidden; }
+.ach-bar i { display: block; height: 100%; background: var(--acc); }
