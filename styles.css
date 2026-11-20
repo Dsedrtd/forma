@@ -399,3 +399,4 @@ h1, h2, h3 { margin: 0; }
 .pcard-badge path, .pcard-badge circle { fill: none; stroke: rgba(255,255,255,.35); stroke-width: 2.2; stroke-linecap: round; }
 .pcard-badge .on { stroke: #fff; }
 .pcard-badge span { position: relative; }
+.ex-media.flow { object-fit: contain; padding: 10%; }

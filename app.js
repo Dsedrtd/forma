@@ -431,8 +431,26 @@ function mediaSex() {
 }
 const hasMedia = id => typeof MEDIA !== 'undefined' && !!MEDIA[id];
 // содержимое кружка: картинка, видео (video=true) или значок группы мышц
+// силуэт из Flow: в кружках первый кадр, на экране упражнения — смена кадров
+const hasFlow = id => typeof FLOW !== 'undefined' && !!FLOW[id];
+const flowSrc = (id, i) => `media/flow/${FLOW[id][0]}-${i}.svg`;
+function flowPic(id, animate) {
+  const f = FLOW[id];
+  if (animate) for (let i = 0; i < f[1]; i++) new Image().src = flowSrc(id, i);   // предзагрузка кадров
+  return `<img class="ex-media flow" src="${flowSrc(id, f[2][0])}" alt=""${animate ? ` data-flow="${id}"` : ' loading="lazy"'}>`;
+}
+// анимация силуэтов: кадры по порядку из базы, с её скоростью
+setInterval(() => {
+  document.querySelectorAll('img[data-flow]').forEach(img => {
+    const f = FLOW[img.dataset.flow], seq = f[2];
+    const i = seq[Math.floor(Date.now() / f[3]) % seq.length];
+    const src = flowSrc(img.dataset.flow, i);
+    if (!img.src.endsWith(src)) img.src = src;
+  });
+}, 60);
+
 function exPic(id, video) {
-  if (!hasMedia(id)) return MUSCLE_ICON[exMuscle(id)] || '🏋️';
+  if (!hasMedia(id)) return hasFlow(id) ? flowPic(id, video) : (MUSCLE_ICON[exMuscle(id)] || '🏋️');
   const want = mediaSex(), have = MEDIA[id];
   const b = `media/${id}-${have.includes(want) ? want : have[0]}`;
   return video
