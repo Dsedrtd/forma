@@ -291,12 +291,29 @@ function filterChips() {
   }).join('')}</div>`;
 }
 
+// кружок на карточке: отрезок на каждый день программы, пройденные в текущем цикле закрашены,
+// в центре — буква следующей тренировки
+function dayRing(p) {
+  const n = p.plan.length, next = defaultDay(p);
+  const done = p.plan.findIndex(d => d.key === next);
+  const r = 20, gap = n > 1 ? 0.22 : 0, step = 2 * Math.PI / n;
+  let arcs = '';
+  for (let i = 0; i < n; i++) {
+    const a0 = -Math.PI / 2 + i * step + gap / 2, a1 = a0 + step - gap;
+    const pt = a => `${(23 + r * Math.cos(a)).toFixed(2)} ${(23 + r * Math.sin(a)).toFixed(2)}`;
+    arcs += n === 1
+      ? `<circle cx="23" cy="23" r="${r}" class="${i < done ? 'on' : ''}"/>`
+      : `<path d="M ${pt(a0)} A ${r} ${r} 0 0 1 ${pt(a1)}" class="${i < done ? 'on' : ''}"/>`;
+  }
+  return `<div class="pcard-badge"><svg viewBox="0 0 46 46">${arcs}</svg><span>${esc(next)}</span></div>`;
+}
+
 function programCard(p) {
   const on = S.my.includes(p.id);
   const tags = [`${p.days} ${plural(p.days, 'день', 'дня', 'дней')}`, p.place, p.exp, p.since, p.sex];
   return `<div class="pcard" role="button" data-act="open-program" data-arg="${p.id}" style="--h:${p.hue}">
     <button class="bm" data-act="toggle-my" data-arg="${p.id}" aria-label="В мои программы">${on ? I.bmFill : I.bm}</button>
-    <div class="pcard-badge">${p.plan.length}</div>
+    ${dayRing(p)}
     <div class="pcard-art">${p.emoji}</div>
     <h2 class="pcard-title">${esc(p.title)}</h2>
     <div class="tags">${tags.map(t => `<span>${esc(t)}</span>`).join('')}</div>
@@ -405,11 +422,29 @@ function weekStrip(pid) {
   }).join('')}</div>`;
 }
 
+// пол модели на картинках: по программе, которую сейчас смотрят или делают
+function mediaSex() {
+  const v = cur();
+  const pid = v.pid || (S.session && S.session.pid);
+  const p = pid && prog(pid);
+  return p && p.sex === 'Жен.' ? 'f' : 'm';
+}
+const hasMedia = id => typeof MEDIA !== 'undefined' && !!MEDIA[id];
+// содержимое кружка: картинка, видео (video=true) или значок группы мышц
+function exPic(id, video) {
+  if (!hasMedia(id)) return MUSCLE_ICON[exMuscle(id)] || '🏋️';
+  const want = mediaSex(), have = MEDIA[id];
+  const b = `media/${id}-${have.includes(want) ? want : have[0]}`;
+  return video
+    ? `<video class="ex-media" src="${b}.mp4" poster="${b}.jpg" autoplay muted loop playsinline></video>`
+    : `<img class="ex-media" src="${b}.jpg" alt="" loading="lazy">`;
+}
+
 function exCircle(id, done, total, size) {
   const r = 46, c = 2 * Math.PI * r, pct = total ? done / total : 0;
   return `<div class="exc ${size}"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="${r}" class="ring-bg"/>
     <circle cx="50" cy="50" r="${r}" class="ring" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - pct)).toFixed(1)}" transform="rotate(-90 50 50)"/></svg>
-    <div class="exc-in">${MUSCLE_ICON[exMuscle(id)] || '🏋️'}</div></div>`;
+    <div class="exc-in">${exPic(id, size === 'big')}</div></div>`;
 }
 
 /* ---------- Тренировка: старт / завершение ---------- */
@@ -578,7 +613,7 @@ function openSwap(pid, dayKey, slotKey, curId) {
     }
   }
   const opt = (id, on, showMuscle) => `<button class="swap-opt ${on ? 'on' : ''}" data-act="swap-pick" data-arg="${id}">
-      <span class="thumb">${MUSCLE_ICON[exMuscle(id)] || '🏋️'}</span>
+      <span class="thumb">${exPic(id)}</span>
       <span class="name">${esc(exName(id))}${showMuscle ? `<small>${esc(exMuscle(id))}</small>` : ''}</span>
       <i class="radio">${on ? I.check : ''}</i></button>`;
   swapCtx = { pid, dayKey, slotKey: String(slotKey), curId };
@@ -985,7 +1020,7 @@ function exLibrary() {
   return `<div class="chips">${MUSCLES.map(m => `<button class="chip ${m === g ? 'on' : ''}" data-act="ex-group" data-arg="${esc(m)}">${esc(m[0].toUpperCase() + m.slice(1))}</button>`).join('')}</div>
     <div class="g-sec">${esc(g)}</div>
     ${ids.map(id => `<button class="lib-row" data-act="open-exinfo" data-arg="${id}">
-      <span class="lib-ic">${MUSCLE_ICON[g] || '🏋️'}</span><b>${esc(exName(id))}</b><span class="muted">${exBest(id) || '—'}</span></button>`).join('')}`;
+      <span class="lib-ic">${exPic(id)}</span><b>${esc(exName(id))}</b><span class="muted">${exBest(id) || '—'}</span></button>`).join('')}`;
 }
 
 VIEWS.exinfo = ({ id }) => {
@@ -995,7 +1030,7 @@ VIEWS.exinfo = ({ id }) => {
   return `<div class="page">
     <div class="topbar"><button class="icon-btn" data-act="back">${I.back}</button><span></span><span></span></div>
     <div class="exinfo">
-      <div class="exinfo-ic">${MUSCLE_ICON[mu] || '🏋️'}</div>
+      <div class="exinfo-ic">${exPic(id, true)}</div>
       <h1>${esc(exName(id))}</h1>
       <div class="muted">${esc(mu)}</div>
     </div>

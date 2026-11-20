@@ -30,7 +30,7 @@ input, textarea { font: inherit; color: inherit; }
 svg { display: block; }
 h1, h2, h3 { margin: 0; }
 
-.page { padding: 14px 16px 40px; max-width: 560px; margin: 0 auto; min-height: 100vh; }
+.page { padding: calc(14px + var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)) 16px 40px; max-width: 560px; margin: 0 auto; min-height: 100vh; }
 .page.has-nav { padding-bottom: calc(160px + var(--sb)); }
 .page.has-cta { padding-bottom: calc(120px + var(--sb)); }
 .display { font-family: var(--display); font-weight: 900; text-transform: uppercase; letter-spacing: -.01em; }
@@ -98,7 +98,7 @@ h1, h2, h3 { margin: 0; }
 .bm { position: absolute; left: 12px; top: 12px; width: 44px; height: 44px; display: grid; place-items: center; z-index: 2; }
 .pcard-badge {
   position: absolute; right: 16px; top: 16px; width: 46px; height: 46px; border-radius: 50%;
-  border: 1.5px dashed rgba(255,255,255,.4); display: grid; place-items: center;
+  display: grid; place-items: center;
   font-family: var(--display); font-weight: 800; font-size: 15px;
 }
 .empty { text-align: center; color: var(--mute); padding: 60px 20px; }
@@ -389,3 +389,13 @@ h1, h2, h3 { margin: 0; }
 .act-card b { font-family: var(--display); font-weight: 800; font-size: 14px; text-transform: uppercase; }
 .act-card p { color: #ccc; margin: 8px 0 0; line-height: 1.5; font-size: 15px; }
 .head-spacer { width: 52px; flex: none; }
+
+/* ---------- Картинки и видео упражнений ---------- */
+.exc-in, .thumb, .lib-ic, .exinfo-ic { overflow: hidden; }
+.ex-media { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 50%; background: #fff; }
+
+/* кружок дней на карточке программы */
+.pcard-badge svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.pcard-badge path, .pcard-badge circle { fill: none; stroke: rgba(255,255,255,.35); stroke-width: 2.2; stroke-linecap: round; }
+.pcard-badge .on { stroke: #fff; }
+.pcard-badge span { position: relative; }
